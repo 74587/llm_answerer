@@ -1,6 +1,7 @@
 # LLM智能答题服务
 
-基于大语言模型（LLM）的智能答题服务，支持单选、多选、判断、填空等多种题型，提供HTTP API接口和本地缓存功能。
+基于大语言模型（LLM）的智能答题服务，支持单选、多选、判断、填空等多种题型，提供HTTP API接口和本地缓存功能。适用于OCS网课助手。
+<img width="2171" height="1193" alt="屏幕截图 2025-12-23 231758" src="https://github.com/user-attachments/assets/664e22e6-6814-4000-9a45-eac4e8040c25" />
 
 ## 功能特性
 
@@ -140,7 +141,8 @@ curl -X POST http://localhost:5000/search \
 
 ## 集成到AnswererWrapper
 
-服务启动后会自动输出AnswererWrapper配置，可直接复制使用：
+服务启动后会自动输出AnswererWrapper配置，可在OCS网课助手题库设置中直接粘贴使用，启动服务后也会输出：
+服务默认监听0.0.0.0，可在局域网使用。
 
 ```json
 [
