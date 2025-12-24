@@ -88,14 +88,19 @@ CREATE TABLE answer_cache (
     ↓
 FastAPI /search 端点
     ↓
-解析参数（title, options, type, skip_cache）
+解析参数（title, options, type, skip_cache, token）
     ↓
+验证访问令牌（如果配置了ACCESS_TOKEN）
+    ├─ 无效 → 返回401错误
+    └─ 有效 ↓
 answerer.answer_question()
     ↓
 生成缓存键（MD5）
     ↓
 检查缓存？
-    ├─ 命中 → 返回缓存答案
+    ├─ 命中 → 随机重试判断（CACHE_RETRY_PROBABILITY）
+    │         ├─ 不重试 → 返回缓存答案
+    │         └─ 重试 ↓
     └─ 未命中 ↓
 构造 prompt（根据题型）
     ↓
@@ -127,7 +132,9 @@ answerer.answer_question()
 | `OPENAI_API_KEY` | OpenAI API 密钥 | 必填 |
 | `OPENAI_BASE_URL` | API 基础 URL | https://api.openai.com/v1 |
 | `OPENAI_MODEL` | 使用的模型 | gpt-3.5-turbo |
-| `FLASK_PORT` | 服务端口 | 5000 |
+| `LISTEN_PORT` | 服务端口 | 5000 |
+| `ACCESS_TOKEN` | 访问令牌（接口鉴权） | 可选 |
+| `CACHE_RETRY_PROBABILITY` | 缓存随机重试概率 | 0.1（10%） |
 
 ### 命令行参数
 
@@ -175,7 +182,11 @@ python llm_answerer.py --skip-cache  # 禁用缓存，所有请求直接调用 A
 ### 缓存策略
 - 基于题目内容的 MD5 哈希
 - 持久化存储（SQLite）
-- 可选的缓存跳过功能
+- 可选的缓存跳过功能（skip_cache 参数或全局 --skip-cache 标志）
+- **随机重试机制**：缓存命中时按 CACHE_RETRY_PROBABILITY 概率重新调用 LLM
+  - 用于优化答案质量，避免错误答案被永久缓存
+  - 默认 10% 概率重试
+  - 重试后的新答案会覆盖旧缓存（INSERT OR REPLACE）
 - 显著降低 API 调用成本
 
 ### LLM 参数优化
@@ -187,8 +198,9 @@ python llm_answerer.py --skip-cache  # 禁用缓存，所有请求直接调用 A
 
 ### AnswererWrapper 配置
 
-服务启动时会输出 AnswererWrapper 的 JSON 配置，可直接用于前端集成：
+服务启动时会输出 AnswererWrapper 的 JSON 配置，可直接用于前端集成。
 
+**未配置 ACCESS_TOKEN 时：**
 ```json
 {
   "name": "LLM智能答题",
@@ -198,6 +210,27 @@ python llm_answerer.py --skip-cache  # 禁用缓存，所有请求直接调用 A
   "type": "GM_xmlhttpRequest",
   "headers": {
     "Content-Type": "application/json"
+  },
+  "data": {
+    "title": "${title}",
+    "options": "${options}",
+    "type": "${type}"
+  },
+  "handler": "return (res) => res.code === 1 ? [undefined, res.answer] : [res.msg, undefined]"
+}
+```
+
+**配置 ACCESS_TOKEN 后：**
+```json
+{
+  "name": "LLM智能答题",
+  "url": "http://localhost:5000/search",
+  "method": "post",
+  "contentType": "json",
+  "type": "GM_xmlhttpRequest",
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Access-Token": "your_secret_token_here"
   },
   "data": {
     "title": "${title}",
@@ -220,10 +253,13 @@ python llm_answerer.py --skip-cache  # 禁用缓存，所有请求直接调用 A
 
 ## 安全考虑
 
-- API 密钥通过环境变量管理，不硬编码
-- 数据库使用参数化查询防止 SQL 注入
-- 输入验证：题目不能为空
-- 答案格式严格验证
+- **API 密钥管理**：通过环境变量管理，不硬编码
+- **访问控制**：支持 ACCESS_TOKEN 进行接口鉴权
+  - 支持三种传递方式：请求头（X-Access-Token）、查询参数（token）、POST body（token）
+  - 令牌验证失败返回 401 状态码
+- **SQL 注入防护**：数据库使用参数化查询
+- **输入验证**：题目不能为空
+- **答案格式验证**：严格验证答案格式
 
 ## 监控与日志
 
@@ -238,7 +274,7 @@ python llm_answerer.py --skip-cache  # 禁用缓存，所有请求直接调用 A
 
 1. **生产环境**：
    - 使用更强大的数据库（PostgreSQL）
-   - 添加认证机制
+   - 配置 ACCESS_TOKEN 启用访问控制
    - 配置反向代理（Nginx）
    - 启用 HTTPS
 
