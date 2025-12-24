@@ -1,12 +1,13 @@
 # LLM智能答题服务
 
-基于大语言模型（LLM）的轻量智能答题服务，支持单选、多选、判断、填空等多种题型，提供HTTP API接口和本地缓存功能。适用于OCS网课助手。
-<img width="2171" height="1193" alt="屏幕截图 2025-12-23 231758" src="https://github.com/user-attachments/assets/664e22e6-6814-4000-9a45-eac4e8040c25" />
+基于大语言模型（LLM）的智能答题服务，支持单选、多选、判断、填空等多种题型，提供HTTP API接口和本地缓存功能。
 
 ## 功能特性
 
 - **多题型支持**：单选题、多选题、判断题、填空题
 - **智能缓存**：使用SQLite数据库缓存答案，避免重复调用API
+- **随机重试**：支持缓存命中时按概率随机重试，优化答案质量
+- **访问控制**：支持通过ACCESS_TOKEN进行接口访问鉴权
 - **异步架构**：基于FastAPI和AsyncOpenAI，支持高并发请求
 - **自动重试**：API调用失败时自动重试，提高稳定性
 - **答案验证**：自动验证LLM返回的答案格式是否规范
@@ -46,6 +47,12 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 # 服务端口（可选，默认：5000）
 LISTEN_PORT=5000
+
+# 访问令牌（可选，用于接口鉴权）
+ACCESS_TOKEN=your_secret_token_here
+
+# 缓存随机重试概率（可选，默认：0.1，即10%概率重试）
+CACHE_RETRY_PROBABILITY=0.1
 ```
 
 ## 使用方法
@@ -112,6 +119,31 @@ curl -X POST http://localhost:5000/search \
 | options | string | 否 | 选项内容（选择题需要） |
 | type | string | 否 | 题型：single（单选）、multiple（多选）、judgement（判断）、completion（填空） |
 | skip_cache | boolean | 否 | 是否跳过缓存（默认false） |
+| token | string | 否 | 访问令牌（可通过请求头X-Access-Token、查询参数或POST body传递） |
+
+#### 访问鉴权
+
+如果配置了 `ACCESS_TOKEN` 环境变量，则需要在请求中提供访问令牌，支持以下三种方式：
+
+1. **请求头方式**（推荐）：
+```bash
+curl -X POST http://localhost:5000/search \
+  -H "Content-Type: application/json" \
+  -H "X-Access-Token: your_secret_token_here" \
+  -d '{"title": "题目内容", "type": "single"}'
+```
+
+2. **查询参数方式**：
+```bash
+curl "http://localhost:5000/search?title=题目内容&token=your_secret_token_here"
+```
+
+3. **POST body方式**：
+```bash
+curl -X POST http://localhost:5000/search \
+  -H "Content-Type: application/json" \
+  -d '{"title": "题目内容", "token": "your_secret_token_here"}'
+```
 
 #### 响应格式
 
@@ -141,9 +173,9 @@ curl -X POST http://localhost:5000/search \
 
 ## 集成到AnswererWrapper
 
-服务启动后会自动输出AnswererWrapper配置，可在OCS网课助手题库设置中直接粘贴使用，启动服务后也会输出：
-服务默认监听0.0.0.0，可在局域网使用。
+服务启动后会自动输出AnswererWrapper配置，可直接复制使用。
 
+**未配置ACCESS_TOKEN时：**
 ```json
 [
   {
@@ -154,6 +186,29 @@ curl -X POST http://localhost:5000/search \
     "type": "GM_xmlhttpRequest",
     "headers": {
       "Content-Type": "application/json"
+    },
+    "data": {
+      "title": "${title}",
+      "options": "${options}",
+      "type": "${type}"
+    },
+    "handler": "return (res) => res.code === 1 ? [undefined, res.answer] : [res.msg, undefined]"
+  }
+]
+```
+
+**配置ACCESS_TOKEN后：**
+```json
+[
+  {
+    "name": "LLM智能答题",
+    "url": "http://localhost:5000/search",
+    "method": "post",
+    "contentType": "json",
+    "type": "GM_xmlhttpRequest",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Access-Token": "your_secret_token_here"
     },
     "data": {
       "title": "${title}",
