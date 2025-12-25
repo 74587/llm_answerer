@@ -178,6 +178,7 @@ async def answer_with_confidence(
         question_type=question_type,
         context_description="初始答案获取"
     )
+    print(f"[初始回答] 答案: {answer}")
 
     # ============== 步骤3: 评估答案置信度（带重试） ==============
     confidence_prompt = f"""题目：{title}
