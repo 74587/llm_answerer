@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 import aiosqlite
 import asyncio
 import random
+from confidence import answer_with_confidence, validate_answer
 
 # 设置UTF-8编码以正确显示中文
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -108,57 +109,15 @@ class LLMAnswerer:
         except Exception as e:
             print(f"保存缓存失败: {e}")
 
-    def _validate_answer(self, answer, question_type):
-        """验证答案格式是否规范"""
-        if not answer or len(answer.strip()) == 0:
-            return False
-
-        answer = answer.strip()
-
-        if question_type == "single":
-            return len(answer) == 1 and answer.isalpha()
-        elif question_type == "multiple":
-            parts = answer.split('#')
-            return all(len(p) == 1 and p.isalpha() for p in parts)
-        elif question_type == "judgement":
-            return answer in ["正确", "错误"]
-        elif question_type == "completion":
-            return len(answer) > 0
-        else:
-            return len(answer) > 0
-
-    def _build_prompt(self, title, options, question_type):
-        """构造针对不同题型的prompt"""
-        prompt = f"题目：{title}\n"
-
-        if options:
-            prompt += f"\n选项：\n{options}\n"
-
-        if question_type == "single":
-            prompt += "\n这是一道单选题，请仅返回正确答案的选项字母（如A、B、C、D），不要有其他解释。"
-        elif question_type == "multiple":
-            prompt += "\n这是一道多选题，请返回所有正确答案的选项字母，用#号分隔（如A#C#D），不要有其他解释。"
-        elif question_type == "judgement":
-            prompt += '\n这是一道判断题，请仅返回"正确"或"错误"，不要有其他解释。'
-        elif question_type == "completion":
-            prompt += "\n这是一道填空题，请直接给出填空答案，如果有多个空，用#号分隔。"
-        else:
-            prompt += "\n请直接给出答案。"
-
-        return prompt
-
-    async def _call_llm(self, prompt):
-        """调用OpenAI API"""
-        response = await self.client.chat.completions.create(
+    async def _call_llm(self, title, options=None, question_type=None):
+        """调用OpenAI API（带置信度判断版本）"""
+        answer = await answer_with_confidence(
+            client=self.client,
             model=self.model,
-            messages=[
-                {"role": "system", "content": "你是一个专业的答题助手，请根据题目给出准确答案。"},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=500
+            title=title,
+            options=options,
+            question_type=question_type
         )
-        answer = response.choices[0].message.content.strip()
         return answer
 
     async def answer_question(self, title, options=None, question_type=None, skip_cache=False):
@@ -177,33 +136,23 @@ class LLMAnswerer:
                     print(f"[缓存命中] 题目: {title[:50]}... -> 答案: {cached_answer}")
                     return [None, cached_answer]
 
-        prompt = self._build_prompt(title, options, question_type)
+        # confidence.py 已经实现了重试和验证机制，这里只需要调用一次
+        try:
+            answer = await self._call_llm(title, options, question_type)
 
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                answer = await self._call_llm(prompt)
+            # confidence.py 内部已经做了验证，但这里再次验证以确保万无一失
+            if validate_answer(answer, question_type):
+                await self._save_to_cache(cache_key, title, options, question_type, answer)
+                print(f"[LLM回答] 题目: {title[:50]}... -> 答案: {answer}")
+                return [None, answer]
+            else:
+                # 理论上不应该到这里，因为 confidence.py 已经验证过
+                print(f"[警告] confidence.py 返回了无效答案: {answer}")
+                return ["LLM返回的答案格式不规范", None]
 
-                if self._validate_answer(answer, question_type):
-                    await self._save_to_cache(cache_key, title, options, question_type, answer)
-                    print(f"[LLM回答] 题目: {title[:50]}... -> 答案: {answer}")
-                    return [None, answer]
-                else:
-                    print(f"[答案无效] 尝试 {attempt + 1}/{max_retries}: {answer}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(1)
-                        continue
-                    else:
-                        return ["LLM返回的答案格式不规范", None]
-
-            except Exception as e:
-                print(f"[请求失败] 尝试 {attempt + 1}/{max_retries}: {str(e)}")
-                if attempt == max_retries - 1:
-                    return [f"LLM请求失败: {str(e)}", None]
-                await asyncio.sleep(2 ** attempt)
-                continue
-
-        return ["未知错误：所有重试均未返回结果", None]
+        except Exception as e:
+            print(f"[请求失败] {str(e)}")
+            return [f"LLM请求失败: {str(e)}", None]
 
     def get_config_info(self):
         """获取配置信息"""
@@ -231,18 +180,56 @@ def print_startup_info(answerer_obj, port):
     """打印启动信息"""
     config = answerer_obj.get_config_info()
 
+    # 获取额外的配置信息
+    exa_api_key = os.getenv("EXA_API_KEY")
+    confidence_threshold = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
+
     print("\n" + "="*60)
     print("LLM智能答题服务启动成功（异步版本）")
     print("="*60)
     print(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"服务地址: http://localhost:{port}")
     print(f"API端点: http://localhost:{port}/search")
+
+    # 功能状态摘要
     print("-"*60)
-    print("环境配置:")
+    print("启用功能:")
+    features = []
+    features.append(f"  ✓ 智能缓存 (随机重试概率: {CACHE_RETRY_PROBABILITY*100:.0f}%)")
+    if exa_api_key:
+        features.append(f"  ✓ 置信度评估 + 联网搜索 (阈值: {confidence_threshold:.1f})")
+    else:
+        features.append(f"  ✓ 置信度评估 (阈值: {confidence_threshold:.1f})")
+        features.append(f"  ✗ 联网搜索 (未配置 EXA_API_KEY)")
+    if ACCESS_TOKEN:
+        features.append(f"  ✓ 访问令牌认证")
+    else:
+        features.append(f"  ✗ 访问令牌认证 (未启用)")
+
+    for feature in features:
+        print(feature)
+
+    # LLM配置
+    print("-"*60)
+    print("LLM配置:")
     print(f"  模型: {config['model']}")
     print(f"  API地址: {config['base_url']}")
-    print(f"  数据库: {config['db_path']}")
     print(f"  API密钥: {'已设置' if config['api_key_set'] else '未设置'}")
+
+    # 存储配置
+    print("-"*60)
+    print("存储配置:")
+    print(f"  数据库: {config['db_path']}")
+    print(f"  缓存策略: MD5哈希 + 随机重试")
+
+    # Exa搜索配置
+    if exa_api_key:
+        print("-"*60)
+        print("联网搜索配置:")
+        print(f"  Exa API: 已配置")
+        print(f"  搜索触发: 置信度 < {confidence_threshold:.1f}")
+
+    # AnswererWrapper配置
     print("-"*60)
     print("AnswererWrapper配置:")
     print("[")
