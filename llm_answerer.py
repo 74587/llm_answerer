@@ -3,6 +3,7 @@ import sys
 import hashlib
 import json
 import argparse
+import time
 from datetime import datetime
 from contextlib import asynccontextmanager
 from openai import AsyncOpenAI
@@ -123,36 +124,41 @@ class LLMAnswerer:
     async def answer_question(self, title, options=None, question_type=None, skip_cache=False):
         """
         将题目转换为LLM请求并获取答案
-        返回格式: [error_msg, answer]
+        返回格式: [error_msg, answer, elapsed_time]
         """
+        start_time = time.time()
         cache_key = self._get_cache_key(title, options)
 
         if not skip_cache:
             cached_answer = await self._get_cached_answer(cache_key)
             if cached_answer:
+                elapsed = time.time() - start_time
                 if random.random() < CACHE_RETRY_PROBABILITY:
-                    print(f"[缓存命中-随机重试] 题目: {title[:50]}... -> 旧答案: {cached_answer}")
+                    print(f"[缓存命中-随机重试] 题目: {title[:50]}... -> 旧答案: {cached_answer} (耗时: {elapsed*1000:.0f}ms)")
                 else:
-                    print(f"[缓存命中] 题目: {title[:50]}... -> 答案: {cached_answer}")
-                    return [None, cached_answer]
+                    print(f"[缓存命中] 题目: {title[:50]}... -> 答案: {cached_answer} (耗时: {elapsed*1000:.0f}ms)")
+                    return [None, cached_answer, elapsed]
 
         # confidence.py 已经实现了重试和验证机制，这里只需要调用一次
         try:
             answer = await self._call_llm(title, options, question_type)
+            elapsed = time.time() - start_time
 
             # confidence.py 内部已经做了验证，但这里再次验证以确保万无一失
             if validate_answer(answer, question_type):
                 await self._save_to_cache(cache_key, title, options, question_type, answer)
-                print(f"[LLM回答] 题目: {title[:50]}... -> 答案: {answer}")
-                return [None, answer]
+                print(f"[LLM回答] 题目: {title[:50]}... -> 答案: {answer} (耗时: {elapsed*1000:.0f}ms)")
+                return [None, answer, elapsed]
             else:
                 # 理论上不应该到这里，因为 confidence.py 已经验证过
-                print(f"[警告] confidence.py 返回了无效答案: {answer}")
-                return ["LLM返回的答案格式不规范", None]
+                elapsed = time.time() - start_time
+                print(f"[警告] confidence.py 返回了无效答案: {answer} (耗时: {elapsed*1000:.0f}ms)")
+                return ["LLM返回的答案格式不规范", None, elapsed]
 
         except Exception as e:
-            print(f"[请求失败] {str(e)}")
-            return [f"LLM请求失败: {str(e)}", None]
+            elapsed = time.time() - start_time
+            print(f"[请求失败] {str(e)} (耗时: {elapsed*1000:.0f}ms)")
+            return [f"LLM请求失败: {str(e)}", None, elapsed]
 
     def get_config_info(self):
         """获取配置信息"""
@@ -305,19 +311,28 @@ async def search(request: Request):
     if not title:
         return JSONResponse({"code": 0, "msg": "题目不能为空"})
 
-    error_msg, answer = await answerer.answer_question(title, options, question_type, skip_cache)
+    result = await answerer.answer_question(title, options, question_type, skip_cache)
+    error_msg, answer, elapsed_time = result if len(result) == 3 else (*result, 0)
 
     if answer:
-        return JSONResponse({
+        response_data = {
             "code": 1,
             "question": title,
             "answer": answer
-        })
+#            ,"elapsed_time": round(elapsed_time, 3),
+#            "elapsed_ms": round(elapsed_time * 1000, 0)
+        }
+        print(f"[响应成功] 答案: {answer}, 总耗时: {elapsed_time*1000:.0f}ms")
+        return JSONResponse(response_data)
     else:
-        return JSONResponse({
+        response_data = {
             "code": 0,
             "msg": error_msg or "未知错误"
-        })
+#            ,"elapsed_time": round(elapsed_time, 3),
+#            "elapsed_ms": round(elapsed_time * 1000, 0)
+        }
+        print(f"[响应失败] 错误: {error_msg}, 总耗时: {elapsed_time*1000:.0f}ms")
+        return JSONResponse(response_data)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='LLM智能答题服务')
