@@ -265,12 +265,16 @@ async def answer_with_confidence(
 
             print(f"[搜索完成] 获取到上下文信息，长度: {len(search_context)} 字符")
 
-            # ============== 步骤6a: 基于搜索结果重新回答（带验证） ==============
+            # ============== 步骤6a: 基于搜索结果和第一次答案信息重新回答（带验证） ==============
             # 复用 _build_prompt 函数构建基础 prompt
             base_prompt = _build_prompt(title, options, question_type)
 
-            # 在基础 prompt 前面插入搜索上下文
-            enhanced_prompt = f"""我通过联网搜索获取到以下相关参考信息：
+            # 同时附上第一次答案、置信度信息和搜索上下文
+            enhanced_prompt = f"""注意：这是第二次回答此问题。
+
+第一次回答的答案是：{answer}，置信度评估：{confidence:.2f}（置信度较低于阈值 {confidence_threshold:.2f}）
+
+由于置信度较低，通过联网搜索获取到以下相关参考信息：
 
 {search_context}
 
@@ -278,17 +282,17 @@ async def answer_with_confidence(
 
 {base_prompt}
 
-请根据上述搜索信息和题目要求，给出准确答案。"""
+请结合搜索信息和首次回答的答案和对应的置信度，重新仔细分析题目，给出更准确的答案。"""
 
             final_answer = await _call_llm_with_validation(
                 client=client,
                 model=model,
                 messages=[
-                    {"role": "system", "content": "你是一个专业的答题助手，请根据题目和提供的参考信息给出准确答案。"},
+                    {"role": "system", "content": "你是一个专业的答题助手，请根据题目、第一次答案的参考和联网搜索的信息给出准确答案。"},
                     {"role": "user", "content": enhanced_prompt}
                 ],
                 question_type=question_type,
-                context_description="基于搜索回答"
+                context_description="基于搜索和第一次答案回答"
             )
 
             print(f"[基于搜索回答] 最终答案: {final_answer}")
@@ -307,8 +311,7 @@ async def answer_with_confidence(
 
         retry_prompt = f"""注意：这是第二次回答此问题。
 
-第一次回答的答案是：{answer}
-第一次回答的置信度评估：{confidence:.2f}（置信度较低，低于阈值 {confidence_threshold:.2f}）
+第一次回答的答案是：{answer}，置信度评估：{confidence:.2f}（置信度较低，低于阈值 {confidence_threshold:.2f}）
 
 由于置信度较低，请重新仔细分析题目，给出更准确的答案。
 
