@@ -5,6 +5,7 @@
 import os
 import asyncio
 import time
+import re
 from openai import AsyncOpenAI
 from search import SearchService
 from dotenv import load_dotenv
@@ -16,6 +17,30 @@ CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
 
 # 检查是否配置了 EXA_API_KEY
 EXA_API_KEY = os.getenv("EXA_API_KEY")
+
+
+def remove_punctuation(text: str) -> str:
+    """
+    去除文本中的标点符号（包括中英文标点）
+
+    Args:
+        text: 原始文本
+
+    Returns:
+        str: 去除标点符号后的文本
+    """
+    # 定义中英文标点符号的正则表达式
+    # 包括英文标点、中文标点、特殊符号等
+    punctuation_pattern = r'[，。！？；：""''（）《》【】、·—…\,\.\!\?\;\:\"\'\(\)\[\]\{\}\<\>\-\_\+\=\*\&\^\%\$\#\@\`\~\|\\\/]'
+
+    # 使用正则表达式替换所有标点符号为空格
+    cleaned_text = re.sub(punctuation_pattern, ' ', text)
+
+    # 将多个连续空格替换为单个空格
+    cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
+
+    # 去除首尾空格
+    return cleaned_text.strip()
 
 
 def validate_answer(answer: str, question_type: str) -> bool:
@@ -262,11 +287,11 @@ async def answer_with_confidence(
         print(f"[联网搜索模式] 检测到 EXA_API_KEY，开始联网搜索...")
 
         try:
-            # 构建搜索查询
-            search_query = f"{title}"
+            # 构建搜索查询，去除标点符号以提高搜索效果
+            search_query = remove_punctuation(title)
             if options and question_type in ["single", "multiple"]:
                 # 对于选择题，将选项也加入搜索查询
-                search_query += f" {options}"
+                search_query += f" {remove_punctuation(options)}"
 
             # 调用搜索服务
             search_start = time.time()
